@@ -1,5 +1,5 @@
-# app/workers/consumer.py
-# app/workers/consumer.py
+# app/workers/transcription_worker.py
+# app/workers/transcription_worker.py
 import json
 import logging
 import os
@@ -17,7 +17,7 @@ from app.core.mq_utils import (
     setup_rabbitmq_channel,
     send_result_to_exchange,
 )
-from app.core.video_utils import delete_file_by_url
+from app.core.video_utils import has_video_stream
 from app.services.transcription_service import run_transcription_pipeline
 
 logger = logging.getLogger("worker")
@@ -40,15 +40,15 @@ def check_ffmpeg() -> bool:
         return False
 
 
-def download_video_to_temp(url: str, task_id: str) -> str:
+def download_media_to_temp(url: str, task_id: str) -> str:
     """
-    根据 videoUrl 下载视频到本地临时文件。
+    下载媒体到本地临时文件。
     采用流式下载，避免一次性加载大文件到内存。
     """
-    logger.info(f"开始下载视频: {url}")
+    logger.info(f"开始下载媒体: {url}")
     r = requests.get(url, stream=True, timeout=60)
     if r.status_code != 200:
-        raise Exception(f"下载视频失败: {r.status_code} {r.text}")
+        raise Exception(f"下载媒体失败: {r.status_code} {r.text}")
 
     suffix = ".mp4"
     # 从 URL 中简单提取后缀
@@ -65,7 +65,7 @@ def download_video_to_temp(url: str, task_id: str) -> str:
             if chunk:
                 f.write(chunk)
 
-    logger.info(f"视频已下载到临时文件: {tmp_path}")
+    logger.info(f"媒体已下载到临时文件: {tmp_path}")
     return tmp_path
 
 
@@ -75,7 +75,7 @@ def process_task(ch, method, properties, body):
     - 预期消息体 body JSON:
       {
         "taskId": "...",           # 与 Java 侧 recordId 对齐
-        "videoUrl": "...",         # 原始视频的 URL
+        "mediaUrl": "...",         # 原始媒体 URL（兼容 videoUrl/audioUrl）
         "language": "zh",          # 可选
         "userId": "...",           # 可选
         "extra": {...}             # 可选扩展
@@ -90,12 +90,16 @@ def process_task(ch, method, properties, body):
         return
 
     task_id = None
-    tmp_video_path: str | None = None
+    tmp_media_path: str | None = None
 
     try:
         msg = json.loads(body.decode())
         task_id = msg.get("taskId")
-        video_url_source = msg.get("videoUrl")
+        media_url_source = (
+            msg.get("mediaUrl")
+            or msg.get("videoUrl")
+            or msg.get("audioUrl")
+        )
         language_hint = msg.get("language") or "zh"
         user_id = msg.get("userId")
         extra = msg.get("extra") or {}
@@ -104,7 +108,7 @@ def process_task(ch, method, properties, body):
         cookie = headers.get("cookie", "")
 
         logger.info(
-            f"消费任务: taskId={task_id}, videoUrl={video_url_source}, userId={user_id}"
+            f"消费任务: taskId={task_id}, mediaUrl={media_url_source}, userId={user_id}"
         )
 
         # === 幂等控制（Redis）===
@@ -113,18 +117,22 @@ def process_task(ch, method, properties, body):
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        if not video_url_source:
-            raise Exception("消息缺少 videoUrl")
+        if not media_url_source:
+            raise Exception("消息缺少 mediaUrl/videoUrl/audioUrl")
 
-        # 1. 下载视频到本地
-        tmp_video_path = download_video_to_temp(video_url_source, task_id)
+        # 1. 下载媒体到本地
+        tmp_media_path = download_media_to_temp(media_url_source, task_id)
+        has_video = has_video_stream(tmp_media_path)
+        logger.info(
+            f"任务媒体类型: {'video' if has_video else 'audio'}, 路径={tmp_media_path}"
+        )
 
         # 2. 调统一流水线
         pipeline_result = run_transcription_pipeline(
-            tmp_video_path,
+            tmp_media_path,
             cookie,
             language_hint=language_hint,
-            extract_images=True,
+            extract_images=has_video,
         )
 
         # 3. 组织回 MQ 的结果结构（给 Java TranscriptionResult 用）
@@ -191,11 +199,11 @@ def process_task(ch, method, properties, body):
             except Exception:
                 pass
     finally:
-        # 收尾清理：删除本地视频
+        # 收尾清理：删除本地媒体
         try:
-            if tmp_video_path and os.path.exists(tmp_video_path):
-                os.remove(tmp_video_path)
-                logger.info(f"已删除临时视频: {tmp_video_path}")
+            if tmp_media_path and os.path.exists(tmp_media_path):
+                os.remove(tmp_media_path)
+                logger.info(f"已删除临时媒体: {tmp_media_path}")
         except Exception:
             pass
 

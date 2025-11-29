@@ -13,6 +13,7 @@ from app.core.video_utils import (
     upload_file_to_server,
     delete_file_by_url,
     extract_group_best_frames,
+    has_video_stream,
 )
 from app.core.transcription_utils import (
     normalize_segments,
@@ -33,8 +34,12 @@ def run_transcription_pipeline(
 ) -> Dict[str, Any]:
     """
     通用转写流水线（不关心 MQ、不关心任务 ID）：
+    支持视频/音频两种输入：
+        - 如果是视频：转 HLS 并抽帧；
+        - 如果是音频：跳过 HLS / 抽帧，直接转写。
+
     输入：
-        - video_path : 本地视频文件绝对路径
+        - video_path : 本地媒体文件绝对路径
         - cookie     : 用于访问文件服务
         - language_hint : 语言提示（阿里云失败时兜底）
         - extract_images: 是否为每个 group 抽帧配图
@@ -46,24 +51,29 @@ def run_transcription_pipeline(
             "sentences": [ {...}, ... ],
             "groups": [ {..., "imageUrls": []}, ... ],
             "subtitles": str,                    # SRT 文本
-            "videoUrl": str,                     # HLS m3u8 URL
+            "videoUrl": str,                     # HLS m3u8 URL（音频文件为空字符串）
             "duration": str,                     # 00:00:00.000
             "durationSeconds": float,
         }
     """
     audio_path: str | None = None
     audio_url: str | None = None
+    has_video = has_video_stream(video_path)
 
     # 1. 时长
     duration_seconds = get_media_duration(video_path)
     duration_fmt = format_duration(duration_seconds)
     logger.info(f"[pipeline] 媒体时长: {duration_seconds:.2f}s -> {duration_fmt}")
 
-    # 2. 转 HLS + 上传 m3u8
-    logger.info("[pipeline] 开始 HLS 转码 + 上传")
-    hls_info = convert_video_to_hls(video_path)
-    m3u8_url = upload_hls_files(hls_info, cookie, cleanup=True)
-    logger.info(f"[pipeline] HLS 上传完成: {m3u8_url}")
+    # 2. 转 HLS + 上传 m3u8（仅视频）
+    if has_video:
+        logger.info("[pipeline] 检测到视频流，开始 HLS 转码 + 上传")
+        hls_info = convert_video_to_hls(video_path)
+        m3u8_url = upload_hls_files(hls_info, cookie, cleanup=True)
+        logger.info(f"[pipeline] HLS 上传完成: {m3u8_url}")
+    else:
+        logger.info("[pipeline] 未检测到视频流，跳过 HLS 转码")
+        m3u8_url = ""
 
     try:
         # 3. 视频转音频 + 上传
@@ -114,7 +124,7 @@ def run_transcription_pipeline(
         )
 
         # 7. group 级配图（可选）
-        if extract_images and groups:
+        if extract_images and has_video and groups:
             group_image_map = extract_group_best_frames(
                 video_path,
                 groups,
