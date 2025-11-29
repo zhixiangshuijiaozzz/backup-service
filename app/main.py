@@ -1,7 +1,7 @@
 # app/main.py
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
-from app.api import extract, transcribe, chatgpt, health, pdf_translation
+from app.api import chatgpt, health, pdf_translation
 from app.core.logging_utils import setup_logging
 from app.config import config
 from fastapi.exceptions import RequestValidationError
@@ -23,8 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(extract.router, prefix="/api")
-app.include_router(transcribe.router, prefix="/api")
 app.include_router(chatgpt.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 
