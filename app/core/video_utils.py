@@ -346,6 +346,32 @@ def get_media_duration(file_path: str) -> float:
     return float(out)
 
 
+def has_video_stream(file_path: str) -> bool:
+    """
+    判断媒体文件是否包含视频流。
+
+    如果命令执行异常则默认返回 False，避免影响后续流程。
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            file_path,
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode().strip()
+        return bool(out)
+    except Exception as e:
+        logger.warning(f"检测视频流失败: {e}")
+        return False
+
+
 def convert_video_to_audio(video_path: str) -> str:
     audio_path = os.path.splitext(video_path)[0] + ".wav"
     cmd = [
