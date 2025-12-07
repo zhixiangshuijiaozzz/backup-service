@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi import status, Request
 from app.core.eureka_client import EurekaClient
+from app.core.nacos_client import NacosClient, _guess_ip
 import logging
 import subprocess
 
@@ -28,6 +29,7 @@ app.include_router(health.router, prefix="/api")
 
 app.include_router(pdf_translation.router, prefix="/api")
 _eureka: EurekaClient | None = None
+_nacos: NacosClient | None = None
 
 @app.on_event("startup")
 async def on_startup():
@@ -38,10 +40,40 @@ async def on_startup():
     except Exception as e:
         logging.error(f"依赖检查失败: {e}")
 
-    # ===== Eureka 注册 =====
+    port = 8091  # 如果用 uvicorn 外部传端口，这里可从环境变量读取
+
+    # ===== Nacos 注册 =====
+    if config.get("NACOS_ENABLED"):
+        try:
+            server_addr = config.get("NACOS_SERVER_ADDR")
+            namespace = config.get("NACOS_NAMESPACE")
+            username = config.get("NACOS_USERNAME") or None
+            password = config.get("NACOS_PASSWORD") or None
+            service_name = config.get("NACOS_SERVICE_NAME")
+            heartbeat_interval = config.get("NACOS_HEARTBEAT_INTERVAL")
+
+            instance_ip = _guess_ip()
+            health_url = f"http://{instance_ip}:{port}/api/health"
+
+            global _nacos
+            _nacos = NacosClient(
+                server_addr=server_addr,
+                service_name=service_name,
+                ip=instance_ip,
+                port=port,
+                namespace=namespace,
+                username=username,
+                password=password,
+                heartbeat_interval=heartbeat_interval,
+                metadata={"health_check": health_url},
+            )
+            _nacos.start()
+        except Exception as e:
+            logging.error(f"Nacos 初始化失败: {e}")
+
+    # ===== Eureka 注册（默认关闭） =====
     if config.get("EUREKA_ENABLED"):
         try:
-            port = 8091  # 如果用 uvicorn 外部传端口，这里可从环境变量读取
             server = config.get("EUREKA_SERVER")
             app_name = config.get("EUREKA_APP_NAME")
             prefer_ip = config.get("EUREKA_PREFER_IP")
@@ -105,6 +137,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.on_event("shutdown")
 async def on_shutdown():
     logging.info("媒体服务关闭")
+    # 优雅下线 Nacos
+    try:
+        if _nacos:
+            _nacos.stop()
+    except Exception:
+        pass
+
     # 优雅下线 Eureka
     try:
         if _eureka:
