@@ -76,19 +76,6 @@ class Config:
         c["NACOS_SERVICE_NAME"] = os.getenv("NACOS_SERVICE_NAME", "transcribe-service")
         c["NACOS_HEARTBEAT_INTERVAL"] = int(os.getenv("NACOS_HEARTBEAT_INTERVAL", "5"))
 
-        c["EUREKA_ENABLED"] = os.getenv("EUREKA_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-        c["EUREKA_SERVER"] = os.getenv("EUREKA_SERVER", "")  # 例如 http://localhost:8761/eureka 或 http://localhost:8761
-        c["EUREKA_APP_NAME"] = os.getenv("EUREKA_APP_NAME", "transcribe-service")
-        c["EUREKA_PREFER_IP"] = os.getenv("EUREKA_PREFER_IP", "true").lower() in ("1", "true", "yes", "on")
-        c["EUREKA_HEARTBEAT_INTERVAL"] = int(os.getenv("EUREKA_HEARTBEAT_INTERVAL", "30"))
-        c["EUREKA_LEASE_RENEWAL_INTERVAL"] = int(os.getenv("EUREKA_LEASE_RENEWAL_INTERVAL", "30"))
-        c["EUREKA_LEASE_EXPIRATION_DURATION"] = int(os.getenv("EUREKA_LEASE_EXPIRATION_DURATION", "90"))
-        c["EUREKA_REGION"] = os.getenv("EUREKA_REGION", "default")
-        c["EUREKA_ZONE"] = os.getenv("EUREKA_ZONE", "default")
-        # 可选固定 host/ip（一般不需要，自动探测即可）
-        c["EUREKA_INSTANCE_HOSTNAME"] = os.getenv("EUREKA_INSTANCE_HOSTNAME", "")
-        c["EUREKA_INSTANCE_IP"] = os.getenv("EUREKA_INSTANCE_IP", "")
-
         self.config.update(c)
 
     def _load_remote_github(self):

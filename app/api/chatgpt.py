@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import time
-from typing import Optional, AsyncGenerator, List, Dict, Any, Union
+from typing import Optional, AsyncGenerator, List, Dict, Any, Union, AsyncIterator, Tuple
 
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from httpx import ProxyError, ConnectError, ReadTimeout, PoolTimeout
 
 from pydantic import BaseModel
-from typing import Optional
 
 # ===== OpenAI / Anthropic SDK =====
 try:
@@ -164,6 +163,114 @@ logger.info(
 
 openai_async = AsyncOpenAI(api_key="__placeholder__", http_client=shared_async_httpx)
 anthropic_async = AsyncAnthropic(api_key="__placeholder__", http_client=shared_async_httpx) if AsyncAnthropic else None
+
+# =========================
+# OpenAI Provider（基于 httpx 的轻量封装）
+# =========================
+OPENAI_BASE = "https://api.openai.com"
+CHAT_URL = "/v1/chat/completions"
+
+
+def _auth_headers(key: str) -> dict:
+    return {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+
+async def chat_stream(
+    api_key: str,
+    model: str,
+    messages: list,
+    extra: Optional[dict] = None,
+) -> AsyncIterator[Tuple[str, Optional[Dict]]]:
+    """
+    以流式方式调用 OpenAI Chat Completions：
+    产出 ("chunk", {"text": "..."}), ... 最后产出 ("usage", {...}) 和 ("completed", {"full": "..."}).
+    """
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if extra:
+        payload.update(extra)
+
+    async with shared_async_httpx.stream(
+        "POST",
+        f"{OPENAI_BASE}{CHAT_URL}",
+        headers=_auth_headers(api_key),
+        json=payload,
+    ) as resp:
+        if resp.is_error:
+            text = await resp.aread()
+            raise httpx.HTTPStatusError(
+                f"OpenAI error {resp.status_code}: {text.decode('utf-8','ignore')}",
+                request=resp.request,
+                response=resp,
+            )
+
+        full_text: list[str] = []
+        usage: Optional[Dict] = None
+
+        async for line in resp.aiter_lines():
+            if not line:
+                continue
+            if line.startswith("data:"):
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = obj.get("choices", [{}])[0].get("delta", {})
+                if "content" in delta and delta["content"]:
+                    t = delta["content"]
+                    full_text.append(t)
+                    yield ("chunk", {"text": t})
+
+                if "usage" in obj:
+                    usage = obj["usage"]
+
+        final_text = "".join(full_text)
+        if usage:
+            yield ("usage", usage)
+        yield ("completed", {"full": final_text})
+
+
+async def chat_once(
+    api_key: str,
+    model: str,
+    messages: list,
+    extra: Optional[dict] = None,
+) -> Tuple[str, Dict]:
+    """
+    非流式一次性拿完整结果 + usage（供标题生成等）。
+    """
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+    }
+    if extra:
+        payload.update(extra)
+
+    resp = await shared_async_httpx.post(
+        f"{OPENAI_BASE}{CHAT_URL}",
+        headers=_auth_headers(api_key),
+        json=payload,
+    )
+    if resp.is_error:
+        raise httpx.HTTPStatusError(
+            f"OpenAI error {resp.status_code}: {await resp.aread()}",
+            request=resp.request,
+            response=resp,
+        )
+    data = resp.json()
+    text = data["choices"][0]["message"]["content"]
+    usage = data.get("usage", {})
+    return text, usage
 
 # =========================
 # Token 估算兜底（当 SDK 无 usage）
